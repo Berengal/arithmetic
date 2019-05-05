@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Math.Arithmetic where
 
@@ -11,6 +12,7 @@ import Control.Applicative
 import Data.Char
 import Data.List
 import Data.Ord
+import Data.Function
 
 data Expr where
   Lit :: Integer -> Expr
@@ -33,24 +35,33 @@ normal (Plus a b) =
     -- Listify tree
     (Plus a' b', c') -> Plus a' (Plus b' c')
 
-    -- Sort variables
+    -- Sort and contract variables
     -- TODO put this into some VarSum type and do the work there
+
     (Vars a', Vars b')
       | b' < a' -> Plus (Vars b') (Vars a')
+      | a' == b' -> Mult (Lit 2) (Vars a')
     (Vars a', Mult (Lit b') (Vars c'))
       | c' < a' -> Plus (Mult (Lit b') (Vars c')) (Vars a')
+      | a' == c' -> Mult (Lit (b' + 1)) (Vars a')
     (Vars a', Plus (Vars b') c')
       | b' < a' -> Plus (Vars b') (Plus (Vars a') c')
+      | a' == b' -> Plus (Mult (Lit 2) (Vars a')) c'
     (Vars a', Plus (Mult (Lit b') (Vars c')) d')
       | c' < a' -> Plus (Mult (Lit b') (Vars c')) (Plus (Vars a') d')
-    (Mult (Lit n') (Vars a'), Vars b')
-      | b' < a' -> Plus (Vars b') (Mult (Lit n') (Vars a'))
-    (Mult (Lit n') (Vars a'), Mult (Lit b') (Vars c'))
-      | c' < a' -> Plus (Mult (Lit b') (Vars c')) (Mult (Lit n') (Vars a'))
-    (Mult (Lit n') (Vars a'), Plus (Vars b') c')
-      | b' < a' -> Plus (Vars b') (Plus (Mult (Lit n') (Vars a')) c')
-    (Mult (Lit n') (Vars a'), Plus (Mult (Lit b') (Vars c')) d')
-      | c' < a' -> Plus (Mult (Lit b') (Vars c')) (Plus (Mult (Lit n') (Vars a')) d')
+      | a' == c' -> Plus (Mult (Lit (b' + 1)) (Vars a')) d'
+    (Mult (Lit a') (Vars b'), Vars c')
+      | c' < b' -> Plus (Vars c') (Mult (Lit a') (Vars b'))
+      | b' == c' -> Mult (Lit (a' + 1)) (Vars b')
+    (Mult (Lit a') (Vars b'), Mult (Lit c') (Vars d'))
+      | d' < b' -> Plus (Mult (Lit c') (Vars d')) (Mult (Lit a') (Vars b'))
+      | b' == d' -> Mult (Lit (a' + c')) (Vars b')
+    (Mult (Lit a') (Vars b'), Plus (Vars c') d')
+      | c' < b' -> Plus (Vars c') (Plus (Mult (Lit a') (Vars b')) d')
+      | b' == c' -> Plus (Mult (Lit (a' + 1)) (Vars b')) d'
+    (Mult (Lit a') (Vars b'), Plus (Mult (Lit c') (Vars d')) e')
+      | d' < b' -> Plus (Mult (Lit c') (Vars d')) (Plus (Mult (Lit a') (Vars b')) e')
+      | b' == d' -> Plus (Mult (Lit (a' + c')) (Vars b')) e'
 
     -- Contraction
     (a', b')
@@ -63,22 +74,6 @@ normal (Plus a b) =
       | b' == d' -> Mult (Lit (a' + c')) b'
     -- Variable contraction must be done separately because Vars a == Vars b
     -- doesn't mean a == b
-    (Vars a', Vars b')
-      | a' == b' -> Mult (Lit 2) (Vars a')
-    (Vars a', Mult (Lit b') (Vars c'))
-      | a' == c' -> Mult (Lit (b' + 1)) (Vars a')
-    (Vars a', Plus (Vars b') c')
-      | a' == b' -> Plus (Mult (Lit 2) (Vars a')) c'
-    (Vars a', Plus (Mult (Lit b') (Vars c')) d')
-      | a' == c' -> Plus (Mult (Lit (b' + 1)) (Vars a')) d'
-    (Mult (Lit a') (Vars b'), Vars c')
-      | b' == c' -> Mult (Lit (a' + 1)) (Vars b')
-    (Mult (Lit a') (Vars b'), Mult (Lit c') (Vars d'))
-      | b' == d' -> Mult (Lit (a' + c')) (Vars b')
-    (Mult (Lit a') (Vars b'), Plus (Vars c') d')
-      | b' == c' -> Plus (Mult (Lit 2) (Vars b')) d'
-    (Mult (Lit a') (Vars b'), Plus (Mult (Lit c') (Vars d')) e')
-      | b' == d' -> Plus (Mult (Lit (a' + c')) (Vars b')) e'
 
     -- Default
     (a', b') -> Plus a' b'
@@ -155,28 +150,29 @@ newtype VarProd = VarProd [(Char, Expr)]
   deriving (Show, Eq)
 
 instance Ord VarProd where
-  compare (VarProd a) (VarProd b) = compare (length a) (length b) <> compare a b
+  compare (VarProd a) (VarProd b)
+    = (foldr (<>) EQ .
+        zipWith (comparing fst <> comparing (Down . snd)) a $ b)
+      <> comparing length a b
 
-matchVars :: Expr -> Maybe [(Char, Expr)]
-matchVars (Var a) = Just [(a, Lit 1)]
-matchVars (Pow (Var a) e) = Just [(a, e)]
-matchVars (Mult (Var a) (matchVars -> Just  r)) = Just $ (a, Lit 1):r
-matchVars (Mult (Pow (Var a) e) (matchVars -> Just r)) = Just $ (a, e):r
-matchVars _ = Nothing
+matchProdVars :: Expr -> Maybe [(Char, Expr)]
+matchProdVars (Var a) = Just [(a, Lit 1)]
+matchProdVars (Pow (Var a) e) = Just [(a, e)]
+matchProdVars (Mult (Var a) (matchProdVars -> Just  r)) = Just $ (a, Lit 1):r
+matchProdVars (Mult (Pow (Var a) e) (matchProdVars -> Just r)) = Just $ (a, e):r
+matchProdVars _ = Nothing
 
-buildVars :: [(Char, Expr)] -> Expr
-buildVars = \case
+buildProdVars :: [(Char, Expr)] -> Expr
+buildProdVars = \case
   [v] -> build v
-  (v:vs) -> Mult (build v) (buildVars vs)
+  (v:vs) -> Mult (build v) (buildProdVars vs)
   where
     build (v, Lit 1) = Var v
     build (v, Lit 0) = Lit 1
     build (v, e) = Pow (Var v) e
 
-pattern Vars a <- (fmap (VarProd . sort) . matchVars -> Just a) where
-  Vars (VarProd a) = buildVars a
-
-
+pattern Vars a <- (fmap (VarProd . sort) . matchProdVars -> Just a) where
+  Vars (VarProd a) = buildProdVars a
 
 newtype Parse a = Parse (String -> Maybe (String, a))
 
@@ -219,14 +215,6 @@ space = isChar isSpace
 anyChar :: Parse Char
 anyChar = isChar (const True)
 
-oneOf :: [Parse a] -> Parse a
-oneOf [] = empty
-oneOf [p] = p
-oneOf [p,q] = p <|> q
-oneOf list = let len = length list
-                 (ps, qs) = splitAt (div len 2) list
-             in oneOf ps <|> oneOf qs
-
 times :: Int -> Parse a -> Parse [a]
 times 0 _ = pure []
 times n p = (:) <$> p <*> times (n-1) p
@@ -242,7 +230,8 @@ expr = many space *> (plusExpr <|> bracket expr) <* many space
     lit = Lit . read <$> some digit
     var = Var <$> alpha
     atomicExpr = lit <|> var <|> bracket expr
-    plusExpr = foldr1 Plus <$> (multExpr `sepBy` (ident '+'))
+    negExpr = Mult (Lit (-1)) <$> (ident '-' *> multExpr)
+    plusExpr = foldr1 Plus <$> ((negExpr <|> multExpr) `sepBy` (ident '+'))
     multExpr = foldr1 Mult <$> some (powExpr <|> atomicExpr)
     powExpr = Pow <$> atomicExpr <*> (ident '^' *> atomicExpr)
     
@@ -257,9 +246,13 @@ pSepBy _ [s] = s
 pSepBy c (s:ss) = s . pChar c . pSepBy c ss
 
 pprintExpr :: Expr -> PPrint
-pprintExpr (Lit n) = pString (show n)
+pprintExpr (Lit n) | n < 0 = pChar '-' . pString (show (-n))
+                   | otherwise = pString (show n)
 pprintExpr (Var v) = pChar v
 pprintExpr (Plus a b) = pSepBy ' ' [pprintExpr a, pChar '+', pprintExpr b]
+pprintExpr (Mult (Lit a) b) | a < 0 = pChar '-' . pprintExpr (Mult (Lit (-a)) b)
+pprintExpr (Mult (Lit a) (Lit b)) = pprintExpr (Lit a) . pBracket (pprintExpr (Lit b))
+pprintExpr (Mult (Mult (Lit a) b) (Lit c)) = pBracket (pprintExpr (Mult (Lit a) b)) . bracketMult c
 pprintExpr (Mult a b) = bracketMult a . bracketMult b
   where bracketMult (Lit a) = pprintExpr (Lit a)
         bracketMult (Var a) = pprintExpr (Var a)
@@ -281,5 +274,8 @@ pprint = ($"")
 prettyExpr :: Expr -> String
 prettyExpr = pprint . pprintExpr
 
-priters :: Int -> Expr -> IO ()
-priters n = mapM_ print . take n . map prettyExpr . iterate normal 
+priters :: Int -> Maybe Expr -> IO ()
+priters n (Just e) = mapM_ print . take n . map prettyExpr . iterate normal $ e
+expiters n (Just e) = mapM_ print . take n . iterate normal $ e
+
+test = fmap (prettyExpr . stable normal) <$> parse expr
